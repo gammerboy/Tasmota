@@ -64,6 +64,10 @@ bool RtcSettingsLoad(uint32_t update) {
       RtcSettings.valid = RTC_MEM_VALID;
       RtcSettings.energy_kWhtoday = Settings->energy_kWhtoday;
       RtcSettings.energy_kWhtotal = Settings->energy_kWhtotal;
+      for (uint32_t i = 0; i < 3; i++) {
+        RtcSettings.energy_kWhtoday_ph[i] = Settings->energy_kWhtoday_ph[i];
+        RtcSettings.energy_kWhtotal_ph[i] = Settings->energy_kWhtotal_ph[i];
+      }
       RtcSettings.energy_usage = Settings->energy_usage;
       for (uint32_t i = 0; i < MAX_COUNTERS; i++) {
         RtcSettings.pulse_counter[i] = Settings->pulse_counter[i];
@@ -275,6 +279,32 @@ void UpdateQuickPowerCycle(bool update) {
 
 #endif  // FIRMWARE_MINIMAL
 }
+
+#ifdef USE_EMERGENCY_RESET
+/*********************************************************************************************\
+ * Emergency reset if Rx and Tx are tied together
+\*********************************************************************************************/
+
+void EmergencyReset(void) {
+  Serial.begin(115200);
+  Serial.write(0xAA);
+  Serial.write(0x55);
+  delay(1);
+  if (Serial.available() == 2) {
+    if ((Serial.read() == 0xAA) && (Serial.read() == 0x55)) {
+      SettingsErase(3);       // Reset all settings including QuickPowerCycle flag
+
+      do {                    // Wait for user to remove Rx Tx jumper and power cycle
+        Serial.write(0xA5);
+        delay(1000);          // Satisfy SDK
+      } while (Serial.read() == 0xA5);  // Poll for removal of jumper
+
+      ESP_Restart();          // Restart to init default settings
+    }
+  }
+  while (Serial.available()) { Serial.read(); }  // Flush input buffer
+}
+#endif  // USE_EMERGENCY_RESET
 
 /*********************************************************************************************\
  * Settings services
@@ -859,6 +889,9 @@ void SettingsDefaultSet2(void) {
   ParseIPv4(&Settings->ipv4_address[1], PSTR(WIFI_GATEWAY));
   ParseIPv4(&Settings->ipv4_address[2], PSTR(WIFI_SUBNETMASK));
   ParseIPv4(&Settings->ipv4_address[3], PSTR(WIFI_DNS));
+  ParseIPv4(&Settings->ipv4_address[4], PSTR(WIFI_DNS2));
+  ParseIPv4(&Settings->ipv4_rgx_address, PSTR(WIFI_RGX_IP_ADDRESS));
+  ParseIPv4(&Settings->ipv4_rgx_subnetmask, PSTR(WIFI_RGX_SUBNETMASK));
   Settings->sta_config = WIFI_CONFIG_TOOL;
 //  Settings->sta_active = 0;
   SettingsUpdateText(SET_STASSID1, PSTR(STA_SSID1));
@@ -866,6 +899,10 @@ void SettingsDefaultSet2(void) {
   SettingsUpdateText(SET_STAPWD1, PSTR(STA_PASS1));
   SettingsUpdateText(SET_STAPWD2, PSTR(STA_PASS2));
   SettingsUpdateText(SET_HOSTNAME, WIFI_HOSTNAME);
+  SettingsUpdateText(SET_RGX_SSID, PSTR(WIFI_RGX_SSID));
+  SettingsUpdateText(SET_RGX_PASSWORD, PSTR(WIFI_RGX_PASSWORD));
+  Settings->sbflag1.range_extender = WIFI_RGX_STATE;
+  Settings->sbflag1.range_extender_napt = WIFI_RGX_NAPT;
 
   // Syslog
   SettingsUpdateText(SET_SYSLOG_HOST, PSTR(SYS_LOG_HOST));
@@ -881,7 +918,11 @@ void SettingsDefaultSet2(void) {
   Settings->weblog_level = WEB_LOG_LEVEL;
   SettingsUpdateText(SET_WEBPWD, PSTR(WEB_PASSWORD));
   SettingsUpdateText(SET_CORS, PSTR(CORS_DOMAIN));
-
+#ifdef DISABLE_REFERER_CHK
+  flag5.disable_referer_chk |= false;
+#else
+  flag5.disable_referer_chk |= true;
+#endif
   // Button
   flag.button_restrict |= KEY_DISABLE_MULTIPRESS;
   flag.button_swap |= KEY_SWAP_DOUBLE_PRESS;
@@ -1079,7 +1120,7 @@ void SettingsDefaultSet2(void) {
   Settings->display_rows = 2;
   Settings->display_cols[0] = 16;
   Settings->display_cols[1] = 8;
-  Settings->display_dimmer = 1;
+  Settings->display_dimmer_protected = -10;  // 10%
   Settings->display_size = 1;
   Settings->display_font = 1;
 //  Settings->display_rotate = 0;
@@ -1122,7 +1163,7 @@ void SettingsDefaultSet2(void) {
 
   SettingsDefaultWebColor();
 
-  memset(&Settings->monitors, 0xFF, 20);  // Enable all possible monitors, displays and sensors
+  memset(&Settings->sensors, 0xFF, 32);  // Enable all possible sensors
   SettingsEnableAllI2cDrivers();
 
   // Tuya
@@ -1327,7 +1368,7 @@ void SettingsDelta(void) {
     if (Settings->version < 0x09000002) {
       char parameters[32];
       snprintf_P(parameters, sizeof(parameters), PSTR("%d,%d,%d,%d,%d"),
-        Settings->ex_adc_param_type, Settings->ex_adc_param1, Settings->ex_adc_param2, Settings->ex_adc_param3, Settings->mbflag2.data);
+        Settings->influxdb_version, Settings->sensors[0][0], Settings->sensors[0][1], (int)Settings->sensors[0][2], Settings->mbflag2.data);
       SettingsUpdateText(SET_ADC_PARAM1, parameters);
     }
 #endif  // ESP8266
@@ -1361,7 +1402,6 @@ void SettingsDelta(void) {
     if (Settings->version < 0x09040006) {
       Settings->mqtt_wifi_timeout = MQTT_WIFI_CLIENT_TIMEOUT / 100;
     }
-
 #ifdef CONFIG_IDF_TARGET_ESP32C3
     if (Settings->version < 0x09050002) {
       if (Settings->cfg_size != sizeof(TSettings)) {
@@ -1374,6 +1414,32 @@ void SettingsDelta(void) {
       }
     }
 #endif
+    if (Settings->version < 0x09050003) {
+      memset(&Settings->sensors, 0xFF, 16);  // Enable all possible sensors
+    }
+    if (Settings->version < 0x09050004) {
+      Settings->energy_kWhtotal = Settings->ipv4_address[4];
+      ParseIPv4(&Settings->ipv4_address[4], PSTR(WIFI_DNS2));
+    }
+    if (Settings->version < 0x09050005) {
+      Settings->sbflag1.range_extender = WIFI_RGX_STATE;
+      Settings->sbflag1.range_extender_napt = WIFI_RGX_NAPT;
+      ParseIPv4(&Settings->ipv4_rgx_address, PSTR(WIFI_RGX_IP_ADDRESS));
+      ParseIPv4(&Settings->ipv4_rgx_subnetmask, PSTR(WIFI_RGX_SUBNETMASK));
+      SettingsUpdateText(SET_RGX_SSID, PSTR(WIFI_RGX_SSID));
+      SettingsUpdateText(SET_RGX_PASSWORD, PSTR(WIFI_RGX_PASSWORD));
+    }
+    if (Settings->version < 0x09050007) {
+#ifdef DISABLE_REFERER_CHK
+      Settings->flag5.disable_referer_chk |= false;
+#else
+      Settings->flag5.disable_referer_chk |= true;
+#endif
+    }
+    if (Settings->version < 0x09050009) {
+      memset(&Settings->energy_kWhtoday_ph, 0, 36);
+      memset(&RtcSettings.energy_kWhtoday_ph, 0, 24);
+    }
 
     Settings->version = VERSION;
     SettingsSave(1);

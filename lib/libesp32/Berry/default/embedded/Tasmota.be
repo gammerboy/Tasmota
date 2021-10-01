@@ -1,7 +1,28 @@
 #- Native code used for testing and code solidification -#
 #- Do not use it -#
 
-class Tasmota2 : Tasmota
+class Timer
+  var due, f, id
+  def init(due, f, id)
+    self.due = due
+    self.f = f
+    self.id = id
+  end
+  def tostring()
+    import string
+    return string.format("<instance: %s(%s, %s, %s)", str(classof(self)),
+              str(self.due), str(self.f), str(self.id))
+  end
+end
+
+tasmota = nil
+class Tasmota
+  var global      # mapping to TasmotaGlobal
+
+  def init()
+    # instanciate the mapping object to TasmotaGlobal
+    self.global = ctypes_bytes_dyn(self._global_addr, self._global_def)
+  end
 
   # add `chars_in_string(s:string,c:string) -> int``
   # looks for any char in c, and return the position of the first char
@@ -79,7 +100,7 @@ class Tasmota2 : Tasmota
     var sub_event = event
     var rl = string.split(rl_list[0],'#')
     for it:rl
-      found=self.find_key_i(sub_event,it)
+      var found=self.find_key_i(sub_event,it)
       if found == nil return false end
       sub_event = sub_event[found]
     end
@@ -127,9 +148,9 @@ class Tasmota2 : Tasmota
     return false
   end
 
-  def set_timer(delay,f)
+  def set_timer(delay,f,id)
     if !self._timers self._timers=[] end
-    self._timers.push([self.millis(delay),f])
+    self._timers.push(Timer(self.millis(delay),f,id))
   end
 
   # run every 50ms tick
@@ -137,10 +158,24 @@ class Tasmota2 : Tasmota
     if self._timers
       var i=0
       while i<self._timers.size()
-        if self.time_reached(self._timers[i][0])
-          f=self._timers[i][1]
+        if self.time_reached(self._timers[i].due)
+          var f=self._timers[i].f
           self._timers.remove(i)
           f()
+        else
+          i=i+1
+        end
+      end
+    end
+  end
+
+  # remove timers by id
+  def remove_timer(id)
+    if tasmota._timers
+      var i=0
+      while i<tasmota._timers.size()
+        if self._timers[i].id == id
+          self._timers.remove(i)
         else
           i=i+1
         end
@@ -208,70 +243,123 @@ class Tasmota2 : Tasmota
 
   def load(f)
     import string
+    import path
+
+    # if the filename has no '.' append '.be'
+    if string.find(f, '.') < 0
+      f += ".be"
+    end
 
     # check that the file ends with '.be' of '.bec'
     var fl = string.split(f,'.')
     if (size(fl) <= 1 || (fl[-1] != 'be' && fl[-1] != 'bec'))
       raise "io_error", "file extension is not '.be' or '.bec'"
     end
-    var native = f[size(f)-1] == 'c'
-    # load - works the same for .be and .bec
 
-    # try if file exists
-    try
-      var ff = open(f, 'r')
-      ff.close()
-    except 'io_error'
-      return false    # signals that file does not exist
+    var is_bytecode = f[-1] == 'c'            # file is Berry source and not bytecode
+    var f_time = path.last_modified(f)
+
+    if is_bytecode
+      if f_time == nil  return false end      # file does not exist
+      # f is the right file, continue
+    else
+      var f_time_bc = path.last_modified(f + "c") # timestamp for bytecode
+      if f_time == nil && f_time_bc == nil  return false end
+      if f_time_bc != nil && (f_time == nil || f_time_bc >= f_time)
+        # bytecode exists and is more recent than berry source, use bytecode
+        f = f + "c"   # use bytecode name
+        is_bytecode = true
+      end
     end
-
-    var c = compile(f,'file')
+    
+    var c = compile(f, 'file')
     # save the compiled bytecode
-    if !native
+    if !is_bytecode
       try
-        self.save(f+'c', c)
+        self.save(f + 'c', c)
       except .. as e
-        self.log(string.format('BRY: could not save compiled file %s (%s)',f+'c',e))
+        print(string.format('BRY: could not save compiled file %s (%s)',f+'c',e))
       end
     end
     # call the compiled code
     c()
     # call successfuls
     return true
-
   end
 
-  def event(type, cmd, idx, payload)
-    if type=='cmd' return self.exec_cmd(cmd, idx, payload)
-    elif type=='rule' return self.exec_rules(payload)
-    elif type=='mqtt_data' return nil
-    elif type=='gc' return self.gc()
-    elif type=='every_50ms' return self.run_deferred()
+  def event(event_type, cmd, idx, payload, raw)
+    import introspect
+    if event_type=='every_50ms' self.run_deferred() end  #- first run deferred events -#
+
+    if event_type=='cmd' return self.exec_cmd(cmd, idx, payload)
+    elif event_type=='rule' return self.exec_rules(payload)
+    elif event_type=='gc' return self.gc()
     elif self._drivers
       for d:self._drivers
-        try
-          if   type=='every_second' && d.every_second                           d.every_second()
-          elif type=='every_100ms' && d.every_100ms                             d.every_100ms()
-          elif type=='web_add_button' && d.web_add_button                       d.web_add_button()
-          elif type=='web_add_main_button' && d.web_add_main_button             d.web_add_main_button()
-          elif type=='web_add_management_button' && d.web_add_management_button d.web_add_management_button()
-          elif type=='web_add_config_button' && d.web_add_config_button         d.web_add_config_button()
-          elif type=='web_add_console_button' && d.web_add_console_button       d.web_add_console_button()
-          elif type=='save_before_restart' && d.save_before_restart             d.save_before_restart()
-          elif type=='web_add_handler' && d.web_add_handler                     d.web_add_handler()
-          elif type=='web_sensor' && d.web_sensor                               d.web_sensor()
-          elif type=='json_append' && d.json_append                             d.json_append()
-          elif type=='button_pressed' && d.button_pressed                       d.button_pressed()
-          elif type=='web_add_handler' && d.display                             d.display()
-          elif type=='display' && d.display                                     d.display()
+        var f = introspect.get(d, event_type)   # try to match a function or method with the same name
+        if type(f) == 'function'
+          try
+            var done = f(d, cmd, idx, payload, raw)
+            if done == true return true end
+          except .. as e,m
+            import string
+            print(string.format("BRY: Exception> '%s' - %s", e, m))
           end
-        except .. as e,m
-          import string
-          print(string.format("BRY: Exception> '%s' - %s", e, m))
         end
+      end
+      return false
+    end
+  end
+
+  def add_driver(d)
+    if self._drivers
+      self._drivers.push(d)
+        else
+      self._drivers = [d]
+    end
+  end
+
+  def remove_driver(d)
+    if self._drivers
+      var idx = self._drivers.find(d)
+      if idx != nil
+        self._drivers.pop(idx)
       end
     end
   end
+
+  # cmd high-level function
+  def cmd(command)
+    import json
+    var ret = self._cmd(command)
+    var j = json.load(ret)
+    if type(j) == 'instance'
+      return j
+    else
+      return {'response':j}
+    end
+  end
+
+  # set_light and get_light deprecetaion
+  def get_light(l)
+    print('tasmota.get_light() is deprecated, use light.get()')
+    import light
+    if l != nil
+      return light.get(l)
+    else
+      return light.get()
+    end
+  end
+  def set_light(v,l)
+    print('tasmota.set_light() is deprecated, use light.set()')
+    import light
+    if l != nil
+      return light.set(v,l)
+    else
+      return light.set(v)
+    end
+  end
+
 
   #- dispatch callback number n, with parameters v0,v1,v2,v3 -#
   def cb_dispatch(n,v0,v1,v2,v3)
@@ -297,4 +385,3 @@ class Tasmota2 : Tasmota
   end
 
 end
-tasmota = Tasmota2()

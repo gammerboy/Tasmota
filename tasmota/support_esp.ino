@@ -311,44 +311,6 @@ int32_t EspPartitionMmap(uint32_t action) {
 }
 
 */
-//
-// Crash stuff
-//
-
-void CrashDump(void) {
-}
-
-bool CrashFlag(void) {
-  return false;
-}
-
-void CrashDumpClear(void) {
-}
-
-void CmndCrash(void) {
-  /*
-  volatile uint32_t dummy;
-  dummy = *((uint32_t*) 0x00000000);
-*/
-}
-
-// Do an infinite loop to trigger WDT watchdog
-void CmndWDT(void) {
-  /*
-  volatile uint32_t dummy = 0;
-  while (1) {
-    dummy++;
-  }
-*/
-}
-// This will trigger the os watch after OSWATCH_RESET_TIME (=120) seconds
-void CmndBlockedLoop(void) {
-  /*
-  while (1) {
-    delay(1000);
-  }
-*/
-}
 
 //
 // ESP32 specific
@@ -464,22 +426,43 @@ uint8_t* FlashDirectAccess(void) {
   return data;
 }
 
+extern "C" {
+  bool esp_spiram_is_initialized(void);
+}
+
+// this function is a replacement for `psramFound()`.
+// `psramFound()` can return true even if no PSRAM is actually installed
+// This new version also checks `esp_spiram_is_initialized` to know if the PSRAM is initialized
+bool FoundPSRAM(void) {
+#if CONFIG_IDF_TARGET_ESP32C3
+  return psramFound();
+#else
+  return psramFound() && esp_spiram_is_initialized();
+#endif
+}
+
+// new function to check whether PSRAM is present and supported (i.e. required pacthes are present)
+bool UsePSRAM(void) {
+  static bool can_use_psram = CanUsePSRAM();
+  return FoundPSRAM() && can_use_psram;
+}
+
 void *special_malloc(uint32_t size) {
-  if (psramFound()) {
+  if (UsePSRAM()) {
     return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   } else {
     return malloc(size);
   }
 }
 void *special_realloc(void *ptr, size_t size) {
-  if (psramFound()) {
+  if (UsePSRAM()) {
     return heap_caps_realloc(ptr, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   } else {
     return realloc(ptr, size);
   }
 }
 void *special_calloc(size_t num, size_t size) {
-  if (psramFound()) {
+  if (UsePSRAM()) {
     return heap_caps_calloc(num, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   } else {
     return calloc(num, size);
@@ -487,7 +470,16 @@ void *special_calloc(size_t num, size_t size) {
 }
 
 float CpuTemperature(void) {
-  return ConvertTemp(temperatureRead());
+#ifdef CONFIG_IDF_TARGET_ESP32
+  return (float)temperatureRead();  // In Celsius
+#else
+  // Currently (20210801) repeated calls to temperatureRead() on ESP32C3 and ESP32S2 result in IDF error messages
+  static float t = NAN;
+  if (isnan(t)) {
+    t = (float)temperatureRead();  // In Celsius
+  }
+  return t;
+#endif
 }
 
 /*
@@ -673,6 +665,37 @@ typedef struct {
     return F("ESP32-H2");
   }
   return F("ESP32");
+}
+
+/*
+ * ESP32 v1 and v2 needs some special patches to use PSRAM.
+ * Standard Tasmota 32 do not include those patches.
+ * If using ESP32 v1, please add: `-mfix-esp32-psram-cache-issue -lc-psram-workaround -lm-psram-workaround`
+ *
+ * This function returns true if the chip supports PSRAM natively (v3) or if the
+ * patches are present.
+ */
+bool CanUsePSRAM(void) {
+  if (!FoundPSRAM()) return false;
+#ifdef HAS_PSRAM_FIX
+  return true;
+#endif
+#ifdef CONFIG_IDF_TARGET_ESP32
+  esp_chip_info_t chip_info;
+  esp_chip_info(&chip_info);
+  if ((CHIP_ESP32 == chip_info.model) && (chip_info.revision < 3)) {
+    return false;
+  }
+#if ESP_IDF_VERSION_MAJOR < 4
+  uint32_t chip_ver = REG_GET_FIELD(EFUSE_BLK0_RDATA3_REG, EFUSE_RD_CHIP_VER_PKG);
+  uint32_t pkg_version = chip_ver & 0x7;
+  if ((CHIP_ESP32 == chip_info.model) && (pkg_version >= 6)) {
+    return false;   // support for embedded PSRAM of ESP32-PICO-V3-02 requires esp-idf 4.4
+  }
+#endif // ESP_IDF_VERSION_MAJOR < 4
+
+#endif // CONFIG_IDF_TARGET_ESP32
+  return true;
 }
 
 #endif  // ESP32

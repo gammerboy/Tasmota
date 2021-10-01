@@ -157,50 +157,10 @@ String EthernetMacAddress(void);
 #endif  // ESP32
 
 /*********************************************************************************************\
- * Mandatory defines satisfying disabled defines
+ * Fallback parameters
 \*********************************************************************************************/
 
-#ifndef ESP8266_1M
-#define USE_UFILESYS
-#define GUI_TRASH_FILE
-#define GUI_EDIT_FILE
-#define USE_PING
-  #ifdef USE_RULES
-  #define USE_EXPRESSION
-  #define SUPPORT_IF_STATEMENT
-  #define SUPPORT_MQTT_EVENT
-  #endif  // USE_RULES
-#endif  // NOT ESP8266_1M
-
-#ifdef USE_EMULATION_HUE
-#define USE_EMULATION
-#endif
-#ifdef USE_EMULATION_WEMO
-#define USE_EMULATION
-#endif
-
-// Convert legacy slave to client
-#ifdef USE_TASMOTA_SLAVE
-#define USE_TASMOTA_CLIENT
-#endif
-#ifdef USE_TASMOTA_SLAVE_FLASH_SPEED
-#define USE_TASMOTA_CLIENT_FLASH_SPEED USE_TASMOTA_SLAVE_FLASH_SPEED
-#endif
-#ifdef USE_TASMOTA_SLAVE_SERIAL_SPEED
-#define USE_TASMOTA_CLIENT_SERIAL_SPEED USE_TASMOTA_SLAVE_SERIAL_SPEED
-#endif
-
-#ifdef USE_SCRIPT
-#define USE_UNISHOX_COMPRESSION                // Add support for string compression
-#endif
-#ifdef USE_ZIGBEE
-#define USE_UNISHOX_COMPRESSION                // Add support for string compression
-#endif
-#ifdef USE_EMULATION_HUE
-#define USE_UNISHOX_COMPRESSION                // Add support for string compression
-#endif
-
-#ifdef USE_PID
+#if defined(USE_PID) && (!defined(PID_USE_TIMPROP) || (PID_USE_TIMPROP > 0))
 #define USE_TIMEPROP
 #endif
                                                // See https://github.com/esp8266/Arduino/pull/4889
@@ -382,6 +342,25 @@ String EthernetMacAddress(void);
 #endif
 #ifndef STARTING_OFFSET
 #define STARTING_OFFSET             30         // NOVA SDS parameter used in settings
+#endif
+
+#ifndef WIFI_RGX_STATE
+#define WIFI_RGX_STATE              0
+#endif
+#ifndef WIFI_RGX_NAPT
+#define WIFI_RGX_NAPT               0
+#endif
+#ifndef WIFI_RGX_SSID
+#define WIFI_RGX_SSID               ""
+#endif
+#ifndef WIFI_RGX_PASSWORD
+#define WIFI_RGX_PASSWORD           ""
+#endif
+#ifndef WIFI_RGX_IP_ADDRESS
+#define WIFI_RGX_IP_ADDRESS         "192.168.99.1"
+#endif
+#ifndef WIFI_RGX_SUBNETMASK
+#define WIFI_RGX_SUBNETMASK         "255.255.255.0"
 #endif
 
 /*********************************************************************************************\
